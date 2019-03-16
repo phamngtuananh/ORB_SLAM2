@@ -38,6 +38,7 @@
 #include "ImuTracker.h"
 #include "Converter.h"
 #include "System.h"
+#include "Utils.h"
 
 using namespace std;
 
@@ -49,19 +50,19 @@ class ImageGrabber
     void GrabStereo(const sensor_msgs::ImageConstPtr &msgLeft, const sensor_msgs::ImageConstPtr &msgRight);
     void imuCallback(const sensor_msgs::ImuConstPtr &imu);
     void publishCameraPose(const cv::Mat &pose, const ros::Time &ros_time);
-    void publishImuPose(const tf::Quaternion& quat, const ros::Time &ros_time);
+    void publishImu(const sensor_msgs::Imu::ConstPtr &imu);
 
     // Camera tracking
     ORB_SLAM2::System *mpSLAM;
     bool do_rectify;
     cv::Mat M1l, M2l, M1r, M2r;
-    
+
     // Imu tracking
     bool cam_tracked = false;
     ORB_SLAM2::ImuTracker imutr;
 
     // Publishers
-    ros::Publisher camera_pose_pub, imu_pose_pub;
+    ros::Publisher camera_pose_pub, imu_pub, imu_pose_pub;
     tf::TransformBroadcaster *br;
 };
 
@@ -131,8 +132,9 @@ int main(int argc, char **argv)
     message_filters::Synchronizer<sync_pol> sync(sync_pol(10), left_sub, right_sub);
     sync.registerCallback(boost::bind(&ImageGrabber::GrabStereo, &igb, _1, _2));
 
-    igb.camera_pose_pub = nh.advertise<nav_msgs::Odometry>("orb_slam2/odom", 1);
-    igb.imu_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("orb_slam2/imu_pose", 1);
+    igb.camera_pose_pub = nh.advertise<nav_msgs::Odometry>("orb_slam2/odom", 10);
+    igb.imu_pub = nh.advertise<sensor_msgs::Imu>("orb_slam2/imu", 10);
+    igb.imu_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("orb_slam2/imu_pose", 10);
     igb.br = new tf::TransformBroadcaster();
 
     ros::spin();
@@ -196,23 +198,35 @@ void ImageGrabber::GrabStereo(const sensor_msgs::ImageConstPtr &msgLeft, const s
         cam_tracked = true;
         publishCameraPose(Tcw.inv(), ros::Time(cv_ptrLeft->header.stamp));
     }
-    else
-    {
-        // cout << "Empty pose" << endl;
-    }
+    // else
+    // {
+    //     cout << "Empty pose" << endl;
+    // }
     PROFILER_END(imageCallback);
+}
+
+ostream &operator<<(ostream &os, Eigen::Quaterniond &q)
+{
+    os << q.x() << " " << q.y() << " " << q.z() << " " << q.w();
+    return os;
 }
 
 void ImageGrabber::imuCallback(const sensor_msgs::ImuConstPtr &imu)
 {
     // Wait until camera is tracked and the coordinates are init first
-    if(!cam_tracked)
+    if (!cam_tracked)
         return;
-        
+
     // Convert quaternion to matrix pose format
     ros::Time imuTime(imu->header.stamp);
-    tf::Quaternion imuQuat(imu->orientation.x, imu->orientation.y, imu->orientation.z, imu->orientation.w);
-    publishImuPose(imutr.track(imuQuat), ros::Time(imu->header.stamp));
+    Eigen::Quaterniond imuq(imu->orientation.w, imu->orientation.x, imu->orientation.y, imu->orientation.z);
+    Eigen::Quaterniond imuq_processed = imutr.track(imu->orientation.x, imu->orientation.y, imu->orientation.z, imu->orientation.w);
+    sensor_msgs::Imu::Ptr imu_processed(new sensor_msgs::Imu(*imu));
+    imu_processed->orientation.x = imuq_processed.x();
+    imu_processed->orientation.y = imuq_processed.y();
+    imu_processed->orientation.z = imuq_processed.z();
+    imu_processed->orientation.w = imuq_processed.w();
+    publishImu(imu_processed);
 }
 
 void ImageGrabber::publishCameraPose(const cv::Mat &Tcw, const ros::Time &ros_time)
@@ -247,22 +261,16 @@ void ImageGrabber::publishCameraPose(const cv::Mat &Tcw, const ros::Time &ros_ti
     br->sendTransform(tf::StampedTransform(trf.inverse(), ros_time, "camera", "map"));
 }
 
-void ImageGrabber::publishImuPose(const tf::Quaternion& quat, const ros::Time &ros_time)
+void ImageGrabber::publishImu(const sensor_msgs::Imu::ConstPtr &imu)
 {
-    geometry_msgs::PoseStamped msg;
-    msg.header.stamp = ros_time;
-    msg.header.frame_id = "map";
-    msg.pose.position.x = 0;
-    msg.pose.position.y = 0;
-    msg.pose.position.z = 0;
-    msg.pose.orientation.x = quat.x();
-    msg.pose.orientation.y = quat.y();
-    msg.pose.orientation.z = quat.z();
-    msg.pose.orientation.w = quat.w();
-    imu_pose_pub.publish(msg);
+    imu_pub.publish(imu);
 
-    tf::Transform trf;
-    trf.setOrigin(tf::Vector3(0, 0, 0));
-    trf.setRotation(quat);
-    br->sendTransform(tf::StampedTransform(trf, ros_time, "map", "imu"));
+    br->sendTransform(tf::StampedTransform(tf::Transform(tf::Quaternion(imu->orientation.x,
+                                                                        imu->orientation.y,
+                                                                        imu->orientation.z,
+                                                                        imu->orientation.w),
+                                                         tf::Vector3(0.0, 0.0, 0.0)),
+                                           ros::Time(imu->header.stamp),
+                                           "map",
+                                           "imu"));
 }

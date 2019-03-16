@@ -6,26 +6,23 @@ using namespace std;
 
 namespace ORB_SLAM2
 {
-void ImuTracker::init(const tf::Quaternion &data)
+void ImuTracker::init(const Eigen::Quaterniond &data)
 {
     mInitQuat = data;
+    mInit = true;
 }
 
-tf::Quaternion ImuTracker::track(const tf::Quaternion &data)
+Eigen::Quaterniond ImuTracker::track(double x, double y, double z, double w)
 {
+    Eigen::Quaterniond data(w, x, y, z);
     if (!mInit)
     {
         init(data);
-        return tf::Quaternion();
+        return Eigen::Quaterniond::Identity();
     }
     else
     {
         return mInitQuat.inverse() * data;
     }
-}
-
-void printQuat(const tf::Quaternion &q)
-{
-    cout << quat2RPY(q) << endl;
 }
 } // namespace ORB_SLAM2
