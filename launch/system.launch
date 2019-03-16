@@ -1,0 +1,5 @@
+<launch>
+    <include file="$(find zed_cpu_ros)/launch/camera.launch" />
+    <include file="$(find orb_slam2)/launch/imu.launch" />
+    <include file="$(find orb_slam2)/launch/stereo.launch" />
+</launch>

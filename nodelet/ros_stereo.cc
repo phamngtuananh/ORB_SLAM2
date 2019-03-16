@@ -18,7 +18,6 @@
 * along with ORB-SLAM2. If not, see <http://www.gnu.org/licenses/>.
 */
 
-
 #include <iostream>
 #include <algorithm>
 #include <fstream>
@@ -26,53 +25,71 @@
 
 #include <ros/ros.h>
 #include <cv_bridge/cv_bridge.h>
+#include <sensor_msgs/Imu.h>
+#include <nav_msgs/Odometry.h>
 #include <message_filters/subscriber.h>
 #include <message_filters/time_synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
+#include <tf/transform_broadcaster.h>
+#include <tf/transform_datatypes.h>
 
 #include <opencv2/core/core.hpp>
 
+#include "ImuTracker.h"
+#include "Converter.h"
 #include "System.h"
 
 using namespace std;
 
 class ImageGrabber
 {
-public:
-    ImageGrabber(ORB_SLAM2::System* pSLAM):mpSLAM(pSLAM){}
+  public:
+    ImageGrabber(ORB_SLAM2::System *pSLAM) : mpSLAM(pSLAM) {}
 
-    void GrabStereo(const sensor_msgs::ImageConstPtr& msgLeft,const sensor_msgs::ImageConstPtr& msgRight);
+    void GrabStereo(const sensor_msgs::ImageConstPtr &msgLeft, const sensor_msgs::ImageConstPtr &msgRight);
+    void imuCallback(const sensor_msgs::ImuConstPtr &imu);
+    void publishCameraPose(const cv::Mat &pose, const ros::Time &ros_time);
+    void publishImuPose(const tf::Quaternion& quat, const ros::Time &ros_time);
 
-    ORB_SLAM2::System* mpSLAM;
+    // Camera tracking
+    ORB_SLAM2::System *mpSLAM;
     bool do_rectify;
-    cv::Mat M1l,M2l,M1r,M2r;
+    cv::Mat M1l, M2l, M1r, M2r;
+    
+    // Imu tracking
+    bool cam_tracked = false;
+    ORB_SLAM2::ImuTracker imutr;
+
+    // Publishers
+    ros::Publisher camera_pose_pub, imu_pose_pub;
+    tf::TransformBroadcaster *br;
 };
 
 int main(int argc, char **argv)
 {
-    ros::init(argc, argv, "RGBD");
-    ros::start();
+    ros::init(argc, argv, "vslam_stereo_node");
+    ros::NodeHandle nh;
+    ros::NodeHandle pnh("~");
 
-    if(argc != 4)
-    {
-        cerr << endl << "Usage: rosrun ORB_SLAM2 Stereo path_to_vocabulary path_to_settings do_rectify" << endl;
-        ros::shutdown();
-        return 1;
-    }    
+    std::string orb_vocab_file, config_file;
+    std::string imu_topic, left_camera_topic, right_camera_topic;
+    pnh.getParam("orb_vocab_file", orb_vocab_file);
+    pnh.getParam("config_file", config_file);
+    pnh.getParam("imu_topic", imu_topic);
+    pnh.getParam("left_camera_topic", left_camera_topic);
+    pnh.getParam("right_camera_topic", right_camera_topic);
 
     // Create SLAM system. It initializes all system threads and gets ready to process frames.
-    ORB_SLAM2::System SLAM(argv[1],argv[2],ORB_SLAM2::System::STEREO,true);
+    ORB_SLAM2::System SLAM(orb_vocab_file, config_file, ORB_SLAM2::System::STEREO, true);
 
     ImageGrabber igb(&SLAM);
+    pnh.getParam("do_rectify", igb.do_rectify);
 
-    stringstream ss(argv[3]);
-	ss >> boolalpha >> igb.do_rectify;
-
-    if(igb.do_rectify)
-    {      
+    if (igb.do_rectify)
+    {
         // Load settings related to stereo calibration
-        cv::FileStorage fsSettings(argv[2], cv::FileStorage::READ);
-        if(!fsSettings.isOpened())
+        cv::FileStorage fsSettings(config_file, cv::FileStorage::READ);
+        if (!fsSettings.isOpened())
         {
             cerr << "ERROR: Wrong path to settings" << endl;
             return -1;
@@ -96,24 +113,27 @@ int main(int argc, char **argv)
         int rows_r = fsSettings["RIGHT.height"];
         int cols_r = fsSettings["RIGHT.width"];
 
-        if(K_l.empty() || K_r.empty() || P_l.empty() || P_r.empty() || R_l.empty() || R_r.empty() || D_l.empty() || D_r.empty() ||
-                rows_l==0 || rows_r==0 || cols_l==0 || cols_r==0)
+        if (K_l.empty() || K_r.empty() || P_l.empty() || P_r.empty() || R_l.empty() || R_r.empty() || D_l.empty() || D_r.empty() ||
+            rows_l == 0 || rows_r == 0 || cols_l == 0 || cols_r == 0)
         {
             cerr << "ERROR: Calibration parameters to rectify stereo are missing!" << endl;
             return -1;
         }
 
-        cv::initUndistortRectifyMap(K_l,D_l,R_l,P_l.rowRange(0,3).colRange(0,3),cv::Size(cols_l,rows_l),CV_32F,igb.M1l,igb.M2l);
-        cv::initUndistortRectifyMap(K_r,D_r,R_r,P_r.rowRange(0,3).colRange(0,3),cv::Size(cols_r,rows_r),CV_32F,igb.M1r,igb.M2r);
+        cv::initUndistortRectifyMap(K_l, D_l, R_l, P_l.rowRange(0, 3).colRange(0, 3), cv::Size(cols_l, rows_l), CV_32F, igb.M1l, igb.M2l);
+        cv::initUndistortRectifyMap(K_r, D_r, R_r, P_r.rowRange(0, 3).colRange(0, 3), cv::Size(cols_r, rows_r), CV_32F, igb.M1r, igb.M2r);
     }
 
-    ros::NodeHandle nh;
-
-    message_filters::Subscriber<sensor_msgs::Image> left_sub(nh, "/cam0/image_raw", 1);
-    message_filters::Subscriber<sensor_msgs::Image> right_sub(nh, "/cam1/image_raw", 1);
+    ros::Subscriber imu_sub = nh.subscribe(imu_topic, 1000, &ImageGrabber::imuCallback, &igb);
+    message_filters::Subscriber<sensor_msgs::Image> left_sub(nh, left_camera_topic, 10);
+    message_filters::Subscriber<sensor_msgs::Image> right_sub(nh, right_camera_topic, 10);
     typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
-    message_filters::Synchronizer<sync_pol> sync(sync_pol(10), left_sub,right_sub);
-    sync.registerCallback(boost::bind(&ImageGrabber::GrabStereo,&igb,_1,_2));
+    message_filters::Synchronizer<sync_pol> sync(sync_pol(10), left_sub, right_sub);
+    sync.registerCallback(boost::bind(&ImageGrabber::GrabStereo, &igb, _1, _2));
+
+    igb.camera_pose_pub = nh.advertise<nav_msgs::Odometry>("orb_slam2/odom", 1);
+    igb.imu_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("orb_slam2/imu_pose", 1);
+    igb.br = new tf::TransformBroadcaster();
 
     ros::spin();
 
@@ -130,15 +150,14 @@ int main(int argc, char **argv)
     return 0;
 }
 
-void ImageGrabber::GrabStereo(const sensor_msgs::ImageConstPtr& msgLeft,const sensor_msgs::ImageConstPtr& msgRight)
+void ImageGrabber::GrabStereo(const sensor_msgs::ImageConstPtr &msgLeft, const sensor_msgs::ImageConstPtr &msgRight)
 {
-    // Copy the ros image message to cv::Mat.
     cv_bridge::CvImageConstPtr cv_ptrLeft;
     try
     {
         cv_ptrLeft = cv_bridge::toCvShare(msgLeft);
     }
-    catch (cv_bridge::Exception& e)
+    catch (cv_bridge::Exception &e)
     {
         ROS_ERROR("cv_bridge exception: %s", e.what());
         return;
@@ -149,24 +168,101 @@ void ImageGrabber::GrabStereo(const sensor_msgs::ImageConstPtr& msgLeft,const se
     {
         cv_ptrRight = cv_bridge::toCvShare(msgRight);
     }
-    catch (cv_bridge::Exception& e)
+    catch (cv_bridge::Exception &e)
     {
         ROS_ERROR("cv_bridge exception: %s", e.what());
         return;
     }
 
-    if(do_rectify)
+    // Get rotational distance derived from IMU data
+    cv::Mat imuRotDiff; // disabled
+
+    PROFILER_BEGIN(imageCallback);
+    cv::Mat Tcw;
+    if (do_rectify)
     {
         cv::Mat imLeft, imRight;
-        cv::remap(cv_ptrLeft->image,imLeft,M1l,M2l,cv::INTER_LINEAR);
-        cv::remap(cv_ptrRight->image,imRight,M1r,M2r,cv::INTER_LINEAR);
-        mpSLAM->TrackStereo(imLeft,imRight,cv_ptrLeft->header.stamp.toSec());
+        cv::remap(cv_ptrLeft->image, imLeft, M1l, M2l, cv::INTER_LINEAR);
+        cv::remap(cv_ptrRight->image, imRight, M1r, M2r, cv::INTER_LINEAR);
+        Tcw = mpSLAM->TrackStereo(imLeft, imRight, cv_ptrLeft->header.stamp.toSec(), imuRotDiff);
     }
     else
     {
-        mpSLAM->TrackStereo(cv_ptrLeft->image,cv_ptrRight->image,cv_ptrLeft->header.stamp.toSec());
+        Tcw = mpSLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, cv_ptrLeft->header.stamp.toSec(), imuRotDiff);
     }
 
+    if (!Tcw.empty())
+    {
+        cam_tracked = true;
+        publishCameraPose(Tcw.inv(), ros::Time(cv_ptrLeft->header.stamp));
+    }
+    else
+    {
+        // cout << "Empty pose" << endl;
+    }
+    PROFILER_END(imageCallback);
 }
 
+void ImageGrabber::imuCallback(const sensor_msgs::ImuConstPtr &imu)
+{
+    // Wait until camera is tracked and the coordinates are init first
+    if(!cam_tracked)
+        return;
+        
+    // Convert quaternion to matrix pose format
+    ros::Time imuTime(imu->header.stamp);
+    tf::Quaternion imuQuat(imu->orientation.x, imu->orientation.y, imu->orientation.z, imu->orientation.w);
+    publishImuPose(imutr.track(imuQuat), ros::Time(imu->header.stamp));
+}
 
+void ImageGrabber::publishCameraPose(const cv::Mat &Tcw, const ros::Time &ros_time)
+{
+    static float _val[] = {0, -1, 0, 0,
+                           0, 0, -1, 0,
+                           1, 0, 0, 0,
+                           0, 0, 0, 1};
+    static const cv::Mat Tbc = cv::Mat(4, 4, CV_32F, _val);
+    static const cv::Mat Tcb = Tbc.inv();
+    const cv::Mat Tbw = Tcb * (Tcw * Tbc);
+
+    nav_msgs::Odometry msg;
+    msg.header.stamp = ros_time;
+    msg.header.frame_id = "odom";
+    msg.child_frame_id = "camera";
+    msg.pose.pose.position.x = Tbw.at<float>(0, 3);
+    msg.pose.pose.position.y = Tbw.at<float>(1, 3);
+    msg.pose.pose.position.z = Tbw.at<float>(2, 3);
+
+    vector<float> r = ORB_SLAM2::Converter::toQuaternion(Tbw.rowRange(0, 3).colRange(0, 3));
+    tf::Quaternion q(r[0], r[1], r[2], r[3]);
+    msg.pose.pose.orientation.x = q.x();
+    msg.pose.pose.orientation.y = q.y();
+    msg.pose.pose.orientation.z = q.z();
+    msg.pose.pose.orientation.w = q.w();
+    camera_pose_pub.publish(msg);
+
+    tf::Transform trf;
+    trf.setOrigin(tf::Vector3(Tbw.at<float>(0, 3), Tbw.at<float>(1, 3), Tbw.at<float>(2, 3)));
+    trf.setRotation(q);
+    br->sendTransform(tf::StampedTransform(trf.inverse(), ros_time, "camera", "map"));
+}
+
+void ImageGrabber::publishImuPose(const tf::Quaternion& quat, const ros::Time &ros_time)
+{
+    geometry_msgs::PoseStamped msg;
+    msg.header.stamp = ros_time;
+    msg.header.frame_id = "map";
+    msg.pose.position.x = 0;
+    msg.pose.position.y = 0;
+    msg.pose.position.z = 0;
+    msg.pose.orientation.x = quat.x();
+    msg.pose.orientation.y = quat.y();
+    msg.pose.orientation.z = quat.z();
+    msg.pose.orientation.w = quat.w();
+    imu_pose_pub.publish(msg);
+
+    tf::Transform trf;
+    trf.setOrigin(tf::Vector3(0, 0, 0));
+    trf.setRotation(quat);
+    br->sendTransform(tf::StampedTransform(trf, ros_time, "map", "imu"));
+}

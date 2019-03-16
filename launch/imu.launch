@@ -1,0 +1,3 @@
+<launch>
+    <node pkg="myahrs_driver" type="myahrs_driver" name="myahrs_driver" />
+</launch>

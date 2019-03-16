@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 2.8)
 project(orb_slam2)
 
-IF(NOT CMAKE_BUILD_TYPE)
-  SET(CMAKE_BUILD_TYPE Release)
-ENDIF()
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
 
-LIST(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_modules)
+list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_modules)
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -O3 -march=native ")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -O3 -march=native")
@@ -36,10 +36,10 @@ find_package(catkin REQUIRED COMPONENTS
 
 find_package(OpenCV 3 QUIET)
 if(NOT OpenCV_FOUND)
-   find_package(OpenCV 2.4.3 QUIET)
-   if(NOT OpenCV_FOUND)
-      message(FATAL_ERROR "OpenCV > 2.4.3 not found.")
-   endif()
+  find_package(OpenCV 2.4.3 QUIET)
+  if(NOT OpenCV_FOUND)
+    message(FATAL_ERROR "OpenCV > 2.4.3 not found.")
+  endif()
 endif()
 
 find_package(Eigen3 REQUIRED)
@@ -61,6 +61,7 @@ include_directories(
 )
 
 set(SOURCES
+  src/ImuTracker.cc
   src/System.cc
   src/Tracking.cc
   src/LocalMapping.cc
@@ -80,6 +81,7 @@ set(SOURCES
   src/Sim3Solver.cc
   src/Initializer.cc
   src/Viewer.cc
+  src/Utils.cc
 )
 
 set(LIBS
@@ -92,4 +94,22 @@ set(LIBS
 )
 
 add_executable(stereo nodelet/ros_stereo.cc ${SOURCES})
+add_dependencies(stereo ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(stereo ${LIBS})
+
+add_executable(pose_recorder nodelet/pose_recorder.cc)
+target_link_libraries(pose_recorder ${LIBS})
+
+install(TARGETS stereo
+        ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+        LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+        RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+install(DIRECTORY include
+        DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
+)
+
+install(DIRECTORY launch
+        DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)

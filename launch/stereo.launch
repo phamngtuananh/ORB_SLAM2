@@ -1,0 +1,19 @@
+<launch>
+    <!-- Setting parameters -->
+    <arg name="orb_vocab_file"              default="$(find orb_slam2)/Vocabulary/ORBvoc.txt" />
+    <arg name="config_file"                 default="$(find orb_slam2)config/ZED.yaml" />
+    <arg name="do_rectify"                  default="false" />
+
+    <arg name="imu_topic"                   default="imu/data" />
+    <arg name="left_camera_topic"           default="zed/left/image_rect" />
+    <arg name="right_camera_topic"          default="zed/right/image_rect" />
+
+    <node pkg="orb_slam2" type="stereo" name="vslam_stereo_node" output="screen" required="true">
+        <param name="orb_vocab_file"        value="$(arg orb_vocab_file)" />
+        <param name="config_file"           value="$(arg config_file)" />
+        <param name="do_rectify"            value="$(arg do_rectify)" />
+        <param name="imu_topic"             value="$(arg imu_topic)" />
+        <param name="left_camera_topic"     value="$(arg left_camera_topic)" />
+        <param name="right_camera_topic"    value="$(arg right_camera_topic)" />
+    </node>
+</launch>
